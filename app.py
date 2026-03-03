@@ -156,9 +156,9 @@ class DatabaseManager:
 
         # 2. 寻找可用的网络盘 JDK
         network_paths = [
-            r"\\FAKE_IP_YDJLHUU5\中段工艺\98_Common\吴广\jdk-21_windows-x64_bin",
-            r"\\FAKE_IP_YDJLHUU5\shast document\5140_MFG3\05_RD\001_study report\吴广_RD\jdk-21_windows-x64_bin",
-            r"\\FAKE_IP_YDJLHUU5\shast document\5140_MFG3\02_Polishing\003_Pesonal\吴广\jdk-21_windows-x64_bin"
+            r"\\172.18.250.2\中段工艺\98_Common\吴广\jdk-21_windows-x64_bin",
+            r"\\172.18.250.2\shast document\5140_MFG3\05_RD\001_study report\吴广_RD\jdk-21_windows-x64_bin",
+            r"\\172.18.250.2\shast document\5140_MFG3\02_Polishing\003_Pesonal\吴广\jdk-21_windows-x64_bin"
         ]
         
         valid_net_path = None
