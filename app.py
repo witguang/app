@@ -68,7 +68,7 @@ STAGE_OPTIONS = [
 class Config:
     PATH_TRANSITION_DATE = datetime.strptime("20250714", "%Y%m%d").date()
 
-    NEW_BASE_PATH = [r"\\172.18.139.4\Analytical_FPMS2",r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\05_DPGE\02_DPGE101\01_Production"]
+    NEW_BASE_PATH = [r"\\172.18.139.4\Analytical_FPMS2",r"\\172.18.139.4\Analytical_Machine2\05_DPGE\02_DPGE101\01_Production"]
     OLD_BASE_PATH = r"\\172.18.139.4\Analytical_Machine2\07_FPMS"
 
     DPGE101_BASE_PATH =r"\\172.18.139.4\Analytical_Machine2\05_DPGE\02_DPGE101\01_Production"
