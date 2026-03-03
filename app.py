@@ -68,16 +68,16 @@ STAGE_OPTIONS = [
 class Config:
     PATH_TRANSITION_DATE = datetime.strptime("20250714", "%Y%m%d").date()
 
-    NEW_BASE_PATH = [r"\\FAKE_IP_WHDLM7YB\Analytical_FPMS2",r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\05_DPGE\02_DPGE101\01_Production"]
-    OLD_BASE_PATH = r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\07_FPMS"
+    NEW_BASE_PATH = [r"\\172.18.139.4\Analytical_FPMS2",r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\05_DPGE\02_DPGE101\01_Production"]
+    OLD_BASE_PATH = r"\\172.18.139.4\Analytical_Machine2\07_FPMS"
 
-    DPGE101_BASE_PATH =r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\05_DPGE\02_DPGE101\01_Production"
+    DPGE101_BASE_PATH =r"\\172.18.139.4\Analytical_Machine2\05_DPGE\02_DPGE101\01_Production"
     DEBUG_THICKNESS_SEARCH = False
     
-    ERO_ERROR_PATH_TEMPLATE = r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\07_FPMS\00_ERO_ERROR\{device}"
-    ERO_POST_PATH_TEMPLATE = r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\07_FPMS\00_ERO_POST\{device}"
-    ERO_PRE_PATH_TEMPLATE = r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\07_FPMS\00_ERO_PRE\{device}\Success"
-    THK_PROFILE_PATH_TEMPLATE = r"\\FAKE_IP_WHDLM7YB\Analytical_Machine2\07_FPMS\00_THK_Profile\{device}"
+    ERO_ERROR_PATH_TEMPLATE = r"\\172.18.139.4\Analytical_Machine2\07_FPMS\00_ERO_ERROR\{device}"
+    ERO_POST_PATH_TEMPLATE = r"\\172.18.139.4\Analytical_Machine2\07_FPMS\00_ERO_POST\{device}"
+    ERO_PRE_PATH_TEMPLATE = r"\\172.18.139.4\Analytical_Machine2\07_FPMS\00_ERO_PRE\{device}\Success"
+    THK_PROFILE_PATH_TEMPLATE = r"\\172.18.139.4\Analytical_Machine2\07_FPMS\00_THK_Profile\{device}"
     
     IMP_PREFIXES = ["IMP_W26D08_D35S72_EE1", "IMP_W26D08_D35S72_EE2"]
     THICKNESS_PREFIX = "Thickness_"
