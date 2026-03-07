@@ -1,37 +1,21 @@
 import os
+import sys
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, scrolledtext
-from datetime import datetime
-import pandas as pd
-import numpy as np
-
+from tkinter import ttk, filedialog, messagebox, Checkbutton, scrolledtext
+import csv
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import List, Tuple, Optional, Dict, Any
+import re
 import seaborn as sns
 import warnings
 
-from data_processor import process_and_clean_data_final
-from utils import sanitize_filename
-
-# --- Global Plotting Style for Data Report ---
-sns.set_theme(style="whitegrid", palette="Set2")
-plt.rcParams['font.family'] = 'serif'
-plt.rcParams['font.serif'] = ['Times New Roman', '楷体', 'KaiTi', 'Microsoft YaHei', 'SimHei']
-plt.rcParams['font.sans-serif'] = ['Times New Roman', '楷体', 'KaiTi', 'Microsoft YaHei', 'SimHei']
-plt.rcParams['axes.unicode_minus'] = False
-warnings.filterwarnings("ignore", category=UserWarning, message="Starting a Matplotlib GUI outside of the main thread")
-warnings.filterwarnings("ignore", message="This figure includes Axes that are not compatible with tight_layout")
-
-STAGE_OPTIONS = [
-    "DP", "FP",
-    "PRE_2000", "POST_2000",
-    "POST_DP", "POST_POLY",
-    "POST_LTO", "POST_POLY_LTO",
-    "PRE_FP", "POST_FP",
-    "PRE_EPI", "POST_EPI"
-]
+from config import Config, STAGE_OPTIONS
+from ui.auto_processing import process_and_clean_data_final, sanitize_filename
 
 class DataReportFunction:
     """Automated Data Report Tool (Universal Pro) Integration"""
@@ -55,9 +39,11 @@ class DataReportFunction:
         self.frame = ttk.Frame(self.app.right_frame)
         self.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+        # Title
         title_label = ttk.Label(self.frame, text="Automated Data Report Tool (Universal Pro)", font=("", 14, "bold"))
         title_label.pack(pady=(0, 15))
 
+        # --- MODE SELECTION ---
         mode_frame = ttk.LabelFrame(self.frame, text=" 1. Mode Selection ", padding=10)
         mode_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -72,9 +58,11 @@ class DataReportFunction:
         rb_dp = ttk.Radiobutton(mode_frame, text="Mode 3: DP Only", variable=self.mode_var, value="DP Only", command=self.toggle_mode_ui)
         rb_dp.grid(row=0, column=2, sticky='w', padx=10)
 
+        # --- ADVANCED OPTIONS CONTAINER ---
         self.adv_frame = ttk.Frame(mode_frame)
         self.adv_frame.grid(row=1, column=0, columnspan=3, sticky='nsew', padx=10, pady=5)
         
+        # Labels
         lbl_frame = ttk.Frame(self.adv_frame)
         lbl_frame.pack(fill=tk.X, pady=5)
         ttk.Label(lbl_frame, text="Chart Pre-Label:").pack(side=tk.LEFT, padx=5)
@@ -87,17 +75,20 @@ class DataReportFunction:
         self.post_label_cb.set("POST_2000")
         self.post_label_cb.pack(side=tk.LEFT, padx=5)
 
+        # Buttons
         btn_frame = ttk.Frame(self.adv_frame)
         btn_frame.pack(fill=tk.X, pady=2)
         ttk.Button(btn_frame, text="[+] Add Mapping Row", command=self.add_mapping_row).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="[-] Remove Last Row", command=self.remove_mapping_row).pack(side=tk.LEFT, padx=5)
 
+        # Headers
         header_frame = ttk.Frame(self.adv_frame)
         header_frame.pack(fill=tk.X, pady=(5, 0))
         ttk.Label(header_frame, text="Pre-Sublot (Keyword)", width=25, font=("", 9, "bold")).pack(side=tk.LEFT, padx=5)
         ttk.Label(header_frame, text="Post-Sublot (Keyword)", width=25, font=("", 9, "bold")).pack(side=tk.LEFT, padx=5)
         ttk.Label(header_frame, text="Custom X-Axis Name", width=25, font=("", 9, "bold")).pack(side=tk.LEFT, padx=5)
 
+        # Scrolled Area Implementation using Canvas
         self.canvas_container = ttk.Frame(self.adv_frame)
         self.canvas_container.pack(fill=tk.BOTH, expand=True, pady=5)
         
@@ -119,8 +110,9 @@ class DataReportFunction:
         self.scrollbar.pack(side="right", fill="y")
         
         self.add_mapping_row()
-        self.toggle_mode_ui()
+        self.toggle_mode_ui() # Initial hide if Auto
 
+        # --- CONFIGURATION ---
         settings_frame = ttk.LabelFrame(self.frame, text=" 2. Chart Configuration ", padding=10)
         settings_frame.pack(fill=tk.X, pady=(0, 10))
         
@@ -139,10 +131,12 @@ class DataReportFunction:
                                          state="readonly", width=25)
         self.quality_menu.grid(row=1, column=1, padx=5, pady=5)
         
+        # Checkbox for X-Axis Title
         self.show_xlabel_var = tk.BooleanVar(value=True)
         self.chk_xlabel = ttk.Checkbutton(grid_f, text="Show X-Axis Title (e.g. 'Sublot')", variable=self.show_xlabel_var)
         self.chk_xlabel.grid(row=2, column=0, columnspan=2, sticky='w', padx=5, pady=5)
 
+        # --- ACTIONS ---
         action_frame = ttk.Frame(self.frame)
         action_frame.pack(fill=tk.X, pady=(0, 10))
         
@@ -152,6 +146,7 @@ class DataReportFunction:
         self.generate_all_button = ttk.Button(action_frame, text="Batch Generate (Sublot & Wafer)", command=self.start_generate_all_thread)
         self.generate_all_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
         
+        # Log Area
         log_labelframe = ttk.LabelFrame(self.frame, text=" Run Log ")
         log_labelframe.pack(fill=tk.BOTH, expand=True)
 
@@ -182,9 +177,9 @@ class DataReportFunction:
 
     def toggle_mode_ui(self):
         if self.mode_var.get() == "Auto" or self.mode_var.get() == "DP Only":
-            self.adv_frame.grid_remove() 
+            self.adv_frame.grid_remove() # Hide completely
         else:
-            self.adv_frame.grid() 
+            self.adv_frame.grid() # Show
 
     def get_dpi(self):
         choice = self.quality_choice.get()
@@ -242,6 +237,7 @@ class DataReportFunction:
         state = tk.NORMAL if enable else tk.DISABLED
         self.set_buttons_state(state)
 
+    # --- Threading Workers ---
     def start_single_report_thread(self):
         filepath = filedialog.askopenfilename(title="Select Measurement Data", filetypes=[("CSV files", "*.csv")])
         if not filepath: return
@@ -261,6 +257,7 @@ class DataReportFunction:
 
     def run_process(self, x_col, x_label, config):
         try:
+            # Setup log file
             self.output_dir = os.path.dirname(self.filepath)
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             self.current_log_path = os.path.join(self.output_dir, f"log_{timestamp}.log")
@@ -269,20 +266,20 @@ class DataReportFunction:
             self.processed_df, _, self.data_cols, self.cur_pre_label, self.cur_post_label = process_and_clean_data_final(self.filepath, self.log, config)
             
             self.input_filename_no_ext = os.path.splitext(os.path.basename(self.filepath))[0]
-            
-            # --- 新增：三层嵌套排序（Date -> Sublot -> Wafer ID） ---
+
             sort_columns = [f"{self.cur_pre_label}_Date", f"{self.cur_pre_label}_Sublot", f"{self.cur_pre_label}_Wafer ID"]
             valid_sort_cols = [c for c in sort_columns if c in self.processed_df.columns]
             if valid_sort_cols:
                 self.processed_df = self.processed_df.sort_values(by=valid_sort_cols, ascending=True)
-            # --------------------------------------------------------
-
+            
             out_csv = os.path.join(self.output_dir, f"processed_{self.input_filename_no_ext}.csv")
             self.processed_df.to_csv(out_csv, index=False, encoding='utf_8_sig')
             self.log(f"CSV saved to: {out_csv}")
             
             self.log("\nSTEP 2: Generating HD Charts...")
             
+            # Use dynamic labels based on configuration (DP/FP or PRE_2000/POST_2000 etc.)
+            # The column in processed_df will be named like "PRE_2000_Sublot" or "DP_Sublot"
             suffix = 'Sublot' if x_label == "Sublot" else 'Wafer ID'
             x_col_dynamic = f"{self.cur_pre_label}_{suffix}"
             
@@ -296,6 +293,7 @@ class DataReportFunction:
 
     def run_process_batch(self, config):
         try:
+            # Setup log file
             self.output_dir = os.path.dirname(self.filepath)
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             self.current_log_path = os.path.join(self.output_dir, f"log_{timestamp}.log")
@@ -305,12 +303,10 @@ class DataReportFunction:
             self.output_dir = os.path.dirname(self.filepath)
             self.input_filename_no_ext = os.path.splitext(os.path.basename(self.filepath))[0]
 
-            # --- 新增：三层嵌套排序（Date -> Sublot -> Wafer ID） ---
             sort_columns = [f"{self.cur_pre_label}_Date", f"{self.cur_pre_label}_Sublot", f"{self.cur_pre_label}_Wafer ID"]
             valid_sort_cols = [c for c in sort_columns if c in self.processed_df.columns]
             if valid_sort_cols:
                 self.processed_df = self.processed_df.sort_values(by=valid_sort_cols, ascending=True)
-            # --------------------------------------------------------
 
             out_csv = os.path.join(self.output_dir, f"processed_{self.input_filename_no_ext}.csv")
             self.processed_df.to_csv(out_csv, index=False, encoding='utf_8_sig')
@@ -347,6 +343,7 @@ class DataReportFunction:
         sublot_count = self.processed_df[sublot_col_name].nunique() if sublot_col_name in self.processed_df.columns else 0
         skip_line = (x_label == "Sublot" and sublot_count <= 2)
         
+        # Override Box Plot X-Axis if needed
         if x_label == "Wafer ID":
             box_x_override = sublot_col_name
         else:
@@ -359,6 +356,7 @@ class DataReportFunction:
         if not skip_line: self._plot_collection('line', self.data_cols, x_col, plot_path, x_label, target_dpi)
         self._plot_collection('box', self.data_cols, box_x_override, plot_path, x_label, target_dpi)
 
+    # --- Broken Axis Helper Logic ---
     def _detect_broken_axis(self, data_series, threshold_ratio=0.35, min_gap_abs=40):
         if data_series.empty or data_series.nunique() <= 1: return None
         vals = data_series.dropna().values
@@ -394,20 +392,23 @@ class DataReportFunction:
         labels = ax.get_xticklabels()
         num_labels = len(labels)
         
+        # 基础轴线设置保持一致
         ax.xaxis.set_ticks_position('bottom')
         ax.spines['bottom'].set_position(('outward', 6))
         
         if num_labels <= 10:
+            # 标签数量 <= 10：水平显示 (0度)
             ax.tick_params(axis='x', labelrotation=0, pad=5, direction='out', length=4)
             for label in labels:
-                label.set_ha('center')
-                label.set_va('top')
+                label.set_ha('center')   # 水平居中
+                label.set_va('top')      # 靠顶部对齐 (悬挂在轴线下)
                 label.set_rotation_mode('anchor')
         else:
+            # 标签数量 > 10：垂直显示 (90度)
             ax.tick_params(axis='x', labelrotation=90, pad=5, direction='out', length=4)
             for label in labels:
-                label.set_ha('right')
-                label.set_va('center')
+                label.set_ha('right')    # 将字符串的末尾（右侧）锚定到刻度线
+                label.set_va('center')   # 在垂直方向上居中对齐锚点
                 label.set_rotation_mode('anchor')
 
     def _plot_line(self, base_col, x_col, folder, xlabel, dpi, show_xlabel):
@@ -444,6 +445,7 @@ class DataReportFunction:
                 self._apply_slanted_xticks(ax)
             fig.tight_layout()
         plt.savefig(os.path.join(folder, f"Line_{sanitize_filename(base_col)}.png"), dpi=dpi, bbox_inches='tight'); plt.close(fig)
+        
 
     def _plot_box(self, base_col, x_col, folder, xlabel, dpi, show_xlabel):
         dp, fp, dl = f'{self.cur_pre_label}_{base_col}', f'{self.cur_post_label}_{base_col}', f'DEL_{base_col}'

@@ -1,21 +1,22 @@
 import os
-import tkinter as tk
-from tkinter import ttk, messagebox, Checkbutton
-from tkcalendar import DateEntry
 import csv
 import glob
-import re
 import gc
+import re
+import threading
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, Checkbutton
+from tkcalendar import DateEntry
 from datetime import datetime, timedelta
 from typing import List, Tuple, Optional, Dict, Any
-import numpy as np
 
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') # Use Agg backend for non-interactive plotting
 import matplotlib.pyplot as plt
+import numpy as np
 
 from config import Config
-from utils import FileProcessor
+from data_processor import FileProcessor
 
 class TopoDataFunction:
     """Implements the TOPO DATA feature."""
@@ -25,6 +26,7 @@ class TopoDataFunction:
         self.fpms007_dp_var = tk.BooleanVar(value=True)
     
     def show(self):
+        """Shows the TOPO DATA feature UI."""
         if self.frame: self.frame.destroy()
         self.frame = ttk.Frame(self.app.right_frame)
         self.frame.pack(fill=tk.BOTH, expand=True)
@@ -49,8 +51,9 @@ class TopoDataFunction:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.device_listbox.config(yscrollcommand=scrollbar.set)
 
+        # --- 修改: 列表中加入 DPGE101 ---
         device_list = [f"FPMS{num:03d}" for num in range(1, 13)]
-        device_list.append("DPGE101")
+        device_list.append("DPGE101") # 新增 DPGE101
         
         for device in device_list: 
             self.device_listbox.insert(tk.END, device)
@@ -85,21 +88,31 @@ class TopoDataFunction:
         self.topo_cancel_button = ttk.Button(button_frame, text="取消", command=self.on_topo_cancel, state=tk.DISABLED); self.topo_cancel_button.pack(side=tk.LEFT, padx=5)
 
     def _get_base_folder_path(self, current_date: datetime.date, device_name: str) -> str:
+        """Determines the correct base folder path based on the date and device."""
+        
+        # --- 修改: 处理 DPGE101 的特殊路径 ---
         if device_name == "DPGE101":
             return os.path.join(Config.DPGE101_BASE_PATH, current_date.strftime('%Y%m%d'))
 
+        # 原有逻辑
         if current_date >= Config.PATH_TRANSITION_DATE:
+            # 关键修复：处理 NEW_BASE_PATH 是列表的情况 (解决 TypeError: expected str... not list)
             base = Config.NEW_BASE_PATH
             if isinstance(base, list):
+                # 假设列表的第一个元素是主要的 FPMS 路径
                 base = base[0] 
+            
+            # 确保 base 是字符串后再进行 join
             return os.path.join(str(base), f"01_{device_name}", "01_Production", current_date.strftime('%Y%m%d'))
         else:
             return os.path.join(Config.OLD_BASE_PATH, f"02_{device_name}", "01_Production", current_date.strftime('%Y%m%d'))
 
     def start_topo_processing_thread(self):
+        """Starts file processing in a separate thread."""
         self.app.start_thread(self._process_topo_data_from_ui, self._set_controls_state)
 
     def _process_topo_data_from_ui(self):
+        """Gathers parameters from the UI and starts TOPO processing."""
         inputs = self._gather_ui_inputs()
         if not inputs: return
 
@@ -135,10 +148,21 @@ class TopoDataFunction:
         elif self.app.stop_event.is_set():
             messagebox.showinfo("信息", "处理已由用户取消。")
 
-    def execute_topo_processing(self, start_date, end_date, devices, lot_prefixes, file_prefix, export_profile, fpms007_as_dp, output_suffix: str = "", custom_prefix: str = "") -> Tuple[Optional[str], Optional[List], Optional[List]]:
+    def execute_topo_processing(self, start_date, end_date, devices, lot_prefixes, file_prefix, export_profile, fpms007_as_dp, output_suffix: str = "", custom_prefix: str = "", sublot_eqp_map: dict = None) -> Tuple[Optional[str], Optional[List], Optional[List]]:
+        import time
+        start_time_perf = time.time()
+        
+        # ⭐ 升级统计器：细分近距(±1s)和远距(±10s)盲狙
+        search_stats = {
+            'local': [], 'imp_single': [], 'thk_single': [], 
+            'multi_tier1': [], 'multi_tier2': [], 
+            'fallback': [], 'failed': []
+        }
+
         timestamp = datetime.now().strftime('%H%M%S')
         
         if custom_prefix:
+            import re
             custom_prefix = re.sub(r'[<>:"/\\|?*\n\r]', '_', custom_prefix)
         
         folder_name_base = f"{custom_prefix}TOPO_DATA_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
@@ -155,7 +179,7 @@ class TopoDataFunction:
         headers = [
             "Date", "Device", "Sublot", "Wafer ID", "Source Slot", "Acquisition Time",
             "Mean Thickness (um)", "Center Thickness (um)", "GBIR (um)", "GFLR (um)", "Bow (um)", "Warp (um)",
-            "SFQR Max (um)", "SFQRP99(um)", "ESFQR Max (um)", "ZDD (nm/mm^2)", "THA 2mm (nm)", "THA 10mm (nm)","THA 2mm 0%(nm)", "THA 10mm 0%(nm)",
+            "SFQR Max (um)", "SFQRP99(um)", "ESFQR Max (um)", "ZDD (nm/mm^2)", "THA 2mm (nm)", "THA 10mm (nm)","THA 2mm 0 %(nm)", "THA 10mm 0 %(nm)", 
             "ERO147", "ERO148", "ERO149", "MaxR", "MaxE",
             "Convexity", "Edge", "Center_Slope", "Mid_Slope"
         ]
@@ -168,16 +192,90 @@ class TopoDataFunction:
             
             for device_name in devices:
                 if self.app.stop_event.is_set(): break
-                self._process_device_for_date(current_date, device_name, lot_prefixes, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data)
+                self._process_device_for_date(current_date, device_name, lot_prefixes, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data, sublot_eqp_map, search_stats)
 
         if not self.app.stop_event.is_set() and output_data:
             self._write_output_csv(output_folder, output_data, headers)
             self.app.update_progress(f"{output_suffix} 处理完成！结果已保存。", 100, 'topo')
+            
+            # =====================================================================
+            # ⭐ 生成执行情况汇总日志
+            # =====================================================================
+            try:
+                end_time_perf = time.time()
+                total_seconds = end_time_perf - start_time_perf
+                
+                total_wafers = len(output_data)
+                unique_sublots = set(row[2] for row in output_data if len(row) > 2 and row[2])
+                total_sublots = len(unique_sublots)
+                
+                m, s = divmod(total_seconds, 60)
+                h, m = divmod(m, 60)
+                time_str = f"{int(h)}小时 {int(m)}分钟 {s:.2f}秒" if h > 0 else f"{int(m)}分钟 {s:.2f}秒"
+                
+                log_filename = os.path.join(output_folder, f"{os.path.basename(output_folder)}_RunLog.log")
+                with open(log_filename, 'w', encoding='utf-8') as log_f:
+                    log_f.write("=" * 70 + "\n")
+                    log_f.write("                 TOPO DATA 数据处理执行日志                 \n")
+                    log_f.write("=" * 70 + "\n\n")
+                    log_f.write(f"任务名称:      {os.path.basename(output_folder)}\n")
+                    log_f.write(f"执行时间:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    
+                    log_f.write(f"【查询条件】\n")
+                    log_f.write(f"- 时间范围:    {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}\n")
+                    log_f.write(f"- 数据后缀:    {output_suffix}\n\n")
+                    
+                    log_f.write(f"【处理统计】\n")
+                    log_f.write(f"- Sublot 数量: {total_sublots} 个\n")
+                    log_f.write(f"- Wafer 总数:  {total_wafers} 片\n")
+                    log_f.write(f"- 总计耗时:    {time_str}\n\n")
+
+                    log_f.write(f"【查找策略性能与明细分析】\n")
+                    
+                    def format_stat_list(label, key, show_sublots=True, is_exception_type=False):
+                        lst = search_stats.get(key, [])
+                        count = len(lst)
+                        log_f.write(f"- {label.ljust(14)}: {str(count).rjust(4)} 次\n")
+                        
+                        if count > 0 and show_sublots:
+                            if not is_exception_type:
+                                import textwrap
+                                wrapped = textwrap.fill(", ".join(lst), width=75, initial_indent="    └─ 涉及: ", subsequent_indent="             ")
+                                log_f.write(f"{wrapped}\n")
+                            else:
+                                for item in lst:
+                                    sublot_str, trace_logs = item 
+                                    log_f.write(f"    └─ 涉及 Sublot: {sublot_str}\n")
+                                    log_f.write(f"       [详细追溯诊断]:\n")
+                                    for trace_line in trace_logs:
+                                        clean_line = trace_line.replace('\n', '').strip()
+                                        log_f.write(f"           {clean_line}\n")
+                                    log_f.write("\n")
+                                    
+                    format_stat_list("本地完美匹配", "local", show_sublots=False) 
+                    format_stat_list("IMP单发盲狙", "imp_single", show_sublots=True, is_exception_type=False)
+                    format_stat_list("THK单发盲狙", "thk_single", show_sublots=True, is_exception_type=False)
+                    
+                    log_f.write("\n--- 以下为需要关注的降级/异常情况 ---\n")
+                    # ⭐ 区分近距和远距
+                    format_stat_list("近距盲狙(±1s)", "multi_tier1", show_sublots=True, is_exception_type=True)
+                    format_stat_list("远距盲狙(±10s)", "multi_tier2", show_sublots=True, is_exception_type=True)
+                    format_stat_list("使用残缺备胎", "fallback", show_sublots=True, is_exception_type=True)
+                    format_stat_list("彻底查找失败", "failed", show_sublots=True, is_exception_type=True)
+                    log_f.write("\n")
+                    
+                    log_f.write(f"【涉及的 Sublots 全列表】\n")
+                    for sl in sorted(list(unique_sublots)):
+                        log_f.write(f"  - {sl}\n")
+                        
+            except Exception as log_e:
+                print(f"Failed to write execution log: {log_e}")
+                
             return os.path.abspath(output_folder), output_data, headers
 
         return None, None, None
-
     def _gather_ui_inputs(self) -> Optional[Dict[str, Any]]:
+        """Gathers and validates all user inputs from the UI."""
         selected_devices = [self.device_listbox.get(i) for i in self.device_listbox.curselection()]
         if not selected_devices:
             messagebox.showwarning("警告", "请至少选择一个设备。")
@@ -193,17 +291,47 @@ class TopoDataFunction:
             "fpms007_as_dp": self.fpms007_dp_var.get()
         }
 
-    def _process_device_for_date(self, current_date, device_name, lot_prefixes, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data):
+    def _process_device_for_date(self, current_date, device_name, lot_prefixes, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data, sublot_eqp_map=None, search_stats=None):
+        """Processes all subfolders for a given device on a specific date."""
         base_folder_path = self._get_base_folder_path(current_date, device_name)
         if not os.path.exists(base_folder_path): return
         
         subfolders = self._find_subfolders(base_folder_path, lot_prefixes)
         for subfolder in subfolders:
             if self.app.stop_event.is_set(): break
-            self._process_subfolder(subfolder, current_date, device_name, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data)
+            
+            if device_name == "DPGE101":
+                continue 
 
-    def _process_subfolder(self, subfolder_path, current_date, device_name, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data):
+            if sublot_eqp_map:
+                sublot_name = os.path.basename(subfolder)
+                expected_eqp = None
+                
+                for map_sublot, map_eqp in sublot_eqp_map.items():
+                    if sublot_name.startswith(map_sublot):
+                        expected_eqp = map_eqp
+                        break
+                
+                is_exempted_dpge = False
+                if device_name in ["FPMS004", "FPMS007"]:
+                    is_exempted_dpge = True 
+
+                if expected_eqp and expected_eqp != device_name and not is_exempted_dpge:
+                    print(f"[极速路由优化] 跳过: {sublot_name} 并不在 {device_name} (7020站点应在 {expected_eqp})")
+                    continue
+
+            # 传入 search_stats 统计器
+            self._process_subfolder(subfolder, current_date, device_name, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data, search_stats)
+
+    def _process_subfolder(self, subfolder_path, current_date, device_name, file_prefix, export_profile, fpms007_as_dp, output_folder, output_data, search_stats=None):
+        """Processes IMP, SQMM, and Thickness files within a single subfolder."""
         try:
+            sublot_name = os.path.basename(subfolder_path)
+            print(f"=== 开始处理 Subfolder: {sublot_name} ===")
+            
+            # ⭐ 新增：为当前 Sublot 创建专属的日志黑匣子
+            sublot_trace_logs = []
+            
             imp_result = self._read_csv_file(subfolder_path, file_prefix)
             if not imp_result:
                 return
@@ -238,30 +366,43 @@ class TopoDataFunction:
                                 break
                             except ValueError:
                                 continue
-                        
                         if parsed_dt:
                             acq_time_for_search = parsed_dt
-
                     except ValueError:
                         pass
 
             sqmm_result = self._read_csv_file(subfolder_path, Config.SQMM_PREFIXES[0]) or \
                           self._read_csv_file(subfolder_path, Config.SQMM_PREFIXES[1])
             sqmm_data = sqmm_result[0] if sqmm_result else []
+
+            timestamp_suffix = None
+            imp_filename = next((f for f in os.listdir(subfolder_path) if f.startswith(file_prefix) and f.endswith(".csv")), None)
+            if imp_filename:
+                import re
+                match = re.search(r'[-_](\d{6,14})\.csv$', imp_filename, re.IGNORECASE)
+                if match:
+                    timestamp_suffix = match.group(1)
+
+            expected_wafers = len([r for r in imp_data if r.get('Wafer ID', '').strip()])
             
             thick_filename_local = next((f for f in os.listdir(subfolder_path) if f.startswith(Config.THICKNESS_PREFIX)), None)
-            
+
+            # ⭐ 修改：把专属黑匣子 sublot_trace_logs 传进去
             thick_file_path_to_use = self._find_thickness_file(
                 device_name=device_name,
                 subfolder_path=subfolder_path,
                 fpms007_as_dp=fpms007_as_dp,
                 thick_filename_local=thick_filename_local,
-                acq_time_for_search=acq_time_for_search
+                acq_time_for_search=acq_time_for_search,
+                timestamp_suffix=timestamp_suffix,
+                expected_wafers=expected_wafers,
+                search_stats=search_stats,
+                sublot_trace_logs=sublot_trace_logs
             )
 
             all_profile_data, all_zeroed_data = [], []
             
-            for imp_row in imp_data:
+            for index, imp_row in enumerate(imp_data):
                 wafer_id = imp_row.get('Wafer ID')
                 if not wafer_id: continue
 
@@ -278,185 +419,241 @@ class TopoDataFunction:
                 if profile: all_profile_data.extend(profile)
                 if zeroed: all_zeroed_data.extend(zeroed)
 
-                combined_row = self._combine_data_rows(current_date, device_name, os.path.basename(subfolder_path), imp_row, sqmm_row, thick_metrics)
+                combined_row = self._combine_data_rows(current_date, device_name, sublot_name, imp_row, sqmm_row, thick_metrics)
                 output_data.append(combined_row)
                 
             if export_profile and all_profile_data:
-                self.save_thickness_profile(output_folder, os.path.basename(subfolder_path), all_profile_data, all_zeroed_data)
+                self.save_thickness_profile(output_folder, sublot_name, all_profile_data, all_zeroed_data)
+                
+            print(f"=== 结束处理 Subfolder: {sublot_name} ===\n")
+
         except Exception as e:
-            print(f"Error processing subfolder {subfolder_path}: {e}")
+            print(f"!!! Error processing subfolder {subfolder_path}: {e}")
+            import traceback
+            print(traceback.format_exc())
 
-    def _find_thickness_file(self, device_name: str, subfolder_path: str, fpms007_as_dp: bool, thick_filename_local: Optional[str], acq_time_for_search: Optional[datetime]) -> Optional[str]:
-        debug_enabled = Config.DEBUG_THICKNESS_SEARCH and device_name == "DPGE101"
-        if debug_enabled:
-            print(f"[DPGE101][THK] subfolder_path={subfolder_path}")
-            print(f"[DPGE101][THK] thick_filename_local={thick_filename_local}")
-            print(f"[DPGE101][THK] acq_time_for_search={acq_time_for_search}")
+    # 注意：函数签名多了一个 timestamp_suffix 参数
+    # 函数签名增加了 expected_wafers
+    def _find_thickness_file(self, device_name: str, subfolder_path: str, fpms007_as_dp: bool, thick_filename_local: Optional[str], acq_time_for_search: Optional[datetime], timestamp_suffix: str = None, expected_wafers: int = 0, search_stats: dict = None, sublot_trace_logs: list = None, allow_wide_search: bool = True) -> Optional[str]:
+        
+        def log_thk(msg):
+            print(msg)
+            if sublot_trace_logs is not None:
+                sublot_trace_logs.append(msg)
 
-        def _pick_by_time(files: List[str]) -> Optional[str]:
-            if not files:
-                return None
-            if not acq_time_for_search:
-                return max(files, key=lambda f: os.path.getmtime(f))
-            target_ts = acq_time_for_search.timestamp()
-            return min(files, key=lambda f: abs(os.path.getmtime(f) - target_ts))
+        sublot_name = os.path.basename(subfolder_path)
+        log_thk(f"\n[DEBUG-THK] >>> 寻找厚度文件, 设备: {device_name}")
 
-        def _collect_thickness_candidates(
-            search_dir: str,
-            include_children: bool = False,
-            prefixes: Optional[List[str]] = None
-        ) -> List[str]:
-            if not os.path.isdir(search_dir):
-                return []
-            candidates: List[str] = []
-            normalized_prefixes = [re.sub(r"[^a-z0-9]", "", p.lower()) for p in (prefixes or [Config.THICKNESS_PREFIX])]
+        best_partial_file = None
+        best_wafer_count = -1
+        best_file_size = -1
+
+        def evaluate_and_check_perfect(filepath: str) -> bool:
+            nonlocal best_partial_file, best_wafer_count, best_file_size
             try:
-                for filename in os.listdir(search_dir):
-                    file_lower = filename.lower()
-                    normalized_name = re.sub(r"[^a-z0-9]", "", file_lower)
-                    if file_lower.endswith(".csv") and any(normalized_name.startswith(p) for p in normalized_prefixes):
-                        candidates.append(os.path.join(search_dir, filename))
-            except OSError:
-                return candidates
+                size = os.path.getsize(filepath)
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                
+                header_idx = next((i for i, line in enumerate(lines) if "Wafer ID" in line), -1)
+                if header_idx == -1: return False
+                
+                data_lines = [l.strip() for l in lines[header_idx+1:] if l.strip()]
+                wafer_count = len(data_lines)
+                
+                is_perfect = True
+                if wafer_count < expected_wafers:
+                    log_thk(f"[DEBUG-THK] 质检瑕疵: {os.path.basename(filepath)} 晶圆数不足 ({wafer_count}/{expected_wafers})")
+                    is_perfect = False
+                else:
+                    last_row = data_lines[-1].split(',')
+                    col_idx = Config.ThicknessFile.COL_754_IDX
+                    if len(last_row) <= col_idx or not last_row[col_idx].strip():
+                        log_thk(f"[DEBUG-THK] 质检瑕疵: {os.path.basename(filepath)} 最后一行未写完")
+                        is_perfect = False
+                
+                if not is_perfect:
+                    if wafer_count > best_wafer_count or (wafer_count == best_wafer_count and size > best_file_size):
+                        best_partial_file = filepath
+                        best_wafer_count = wafer_count
+                        best_file_size = size
+                        log_thk(f"[DEBUG-THK] -> 更新最佳备胎: {os.path.basename(filepath)} (晶圆: {wafer_count})")
+                        
+                return is_perfect
+            except Exception as e:
+                log_thk(f"[DEBUG-THK] 验货发生异常: {e}")
+                return False
 
-            if include_children:
-                try:
-                    subdirs = [
-                        os.path.join(search_dir, child)
-                        for child in os.listdir(search_dir)
-                        if os.path.isdir(os.path.join(search_dir, child))
-                    ]
-                except OSError:
-                    subdirs = []
-                for subdir in subdirs:
-                    try:
-                        for filename in os.listdir(subdir):
-                            file_lower = filename.lower()
-                            normalized_name = re.sub(r"[^a-z0-9]", "", file_lower)
-                            if file_lower.endswith(".csv") and any(normalized_name.startswith(p) for p in normalized_prefixes):
-                                candidates.append(os.path.join(subdir, filename))
-                    except OSError:
-                        continue
-            if debug_enabled:
-                print(f"[DPGE101][THK] candidates in {search_dir} (children={include_children}) -> {len(candidates)}")
-            return candidates
+        exact_suffix = timestamp_suffix
+        
+        # ⭐ 改造时间生成器：支持指定范围，方便分阶梯调用
+        def get_offset_suffixes(start_sec, end_sec):
+            offsets = []
+            if not exact_suffix: return offsets
+            try:
+                from datetime import datetime, timedelta
+                if len(exact_suffix) == 12:
+                    base_dt = datetime.strptime(exact_suffix, "%y%m%d%H%M%S")
+                    for offset in range(start_sec, end_sec + 1):
+                        offsets.append((base_dt - timedelta(seconds=offset)).strftime("%y%m%d%H%M%S"))
+                        offsets.append((base_dt + timedelta(seconds=offset)).strftime("%y%m%d%H%M%S"))
+                elif len(exact_suffix) == 14:
+                    base_dt = datetime.strptime(exact_suffix, "%Y%m%d%H%M%S")
+                    for offset in range(start_sec, end_sec + 1):
+                        offsets.append((base_dt - timedelta(seconds=offset)).strftime("%Y%m%d%H%M%S"))
+                        offsets.append((base_dt + timedelta(seconds=offset)).strftime("%Y%m%d%H%M%S"))
+            except ValueError:
+                pass
+            return offsets
 
-        if thick_filename_local:
-            search_paths_by_name = [
-                Config.ERO_ERROR_PATH_TEMPLATE,
-                Config.ERO_POST_PATH_TEMPLATE,
-                Config.THK_PROFILE_PATH_TEMPLATE,
-            ]
-            if device_name == "FPMS004":
-                search_paths_by_name.insert(1, Config.ERO_PRE_PATH_TEMPLATE)
-
-            for path_template in search_paths_by_name:
-                if device_name == "FPMS007" and fpms007_as_dp and path_template in [Config.ERO_PRE_PATH_TEMPLATE, Config.ERO_POST_PATH_TEMPLATE]:
-                    continue
-
-                potential_path = os.path.join(path_template.format(device=device_name), thick_filename_local)
-                if os.path.exists(potential_path):
-                    if debug_enabled:
-                        print(f"[DPGE101][THK] match by name: {potential_path}")
-                    return potential_path
-
-            fallback_path = os.path.join(subfolder_path, thick_filename_local)
-            if os.path.exists(fallback_path):
-                if debug_enabled:
-                    print(f"[DPGE101][THK] match local fallback: {fallback_path}")
-                return fallback_path
-            if device_name == "DPGE101":
-                local_candidates = []
-                date_dir = os.path.dirname(subfolder_path)
-                dpge_prefixes = [
-                    Config.THICKNESS_PREFIX.lower(),
-                    "thickness",
-                    Config.THK_SECTOR_PREFIX.lower(),
-                    "thickness sector height profile sectors 1 inner radius 150mm"
-                ]
-                local_candidates.extend(_collect_thickness_candidates(subfolder_path, prefixes=dpge_prefixes))
-                local_candidates.extend(_collect_thickness_candidates(date_dir, include_children=True, prefixes=dpge_prefixes))
-                selected = _pick_by_time(local_candidates)
-                if selected:
-                    if debug_enabled:
-                        print(f"[DPGE101][THK] match local candidates: {selected}")
-                    return selected
-        else:
-            if device_name == "DPGE101":
-                local_candidates = []
-                date_dir = os.path.dirname(subfolder_path)
-                dpge_prefixes = [
-                    Config.THICKNESS_PREFIX.lower(),
-                    "thickness",
-                    Config.THK_SECTOR_PREFIX.lower(),
-                    "thickness sector height profile sectors 1 inner radius 150mm"
-                ]
-                local_candidates.extend(_collect_thickness_candidates(subfolder_path, prefixes=dpge_prefixes))
-                local_candidates.extend(_collect_thickness_candidates(date_dir, include_children=True, prefixes=dpge_prefixes))
-                selected = _pick_by_time(local_candidates)
-                if selected:
-                    if debug_enabled:
-                        print(f"[DPGE101][THK] match local candidates (no name): {selected}")
-                    return selected
-
-        if acq_time_for_search:
-            search_paths_by_time = [
-                Config.ERO_PRE_PATH_TEMPLATE,
-                Config.ERO_POST_PATH_TEMPLATE,
-                Config.ERO_ERROR_PATH_TEMPLATE,
-                Config.THK_PROFILE_PATH_TEMPLATE,
-            ]
-            extra_search_dirs = []
-            if device_name == "DPGE101":
-                extra_search_dirs.extend([subfolder_path, os.path.dirname(subfolder_path)])
+        # =========================================================
+        # 阶段 1：本地目录极速查找
+        # =========================================================
+        local_dirs = [subfolder_path]
+        if device_name == "DPGE101":
+            local_dirs.append(os.path.dirname(subfolder_path))
             
-            time_window = timedelta(minutes=5)
-            start_time = acq_time_for_search - time_window
-            end_time = acq_time_for_search + time_window
+        local_dirs_ordered = list(dict.fromkeys(local_dirs))
+        
+        if exact_suffix:
+            for d in local_dirs_ordered:
+                if not os.path.isdir(d): continue
+                guess_local_exact = os.path.join(d, f"Thickness_Sector_Height_Profile_Sectors_1_Inner_Radius_150mm_(HiRes)-{exact_suffix}.csv")
+                if os.path.exists(guess_local_exact):
+                    log_thk(f"[DEBUG-THK] 发现本地精确匹配候选: {os.path.basename(guess_local_exact)}，开始质检...")
+                    if evaluate_and_check_perfect(guess_local_exact):
+                        log_thk("[DEBUG-THK] 质检100分！使用本地完美文件。")
+                        if search_stats is not None: search_stats['local'].append(sublot_name)
+                        return guess_local_exact
 
-            for path_template in search_paths_by_time:
-                search_dir = path_template.format(device=device_name)
-                if not os.path.isdir(search_dir):
-                    continue
+        for d in local_dirs_ordered:
+            if not os.path.isdir(d): continue
+            try:
+                for f in os.listdir(d):
+                    if f.lower().startswith("thickness") and "150mm" in f.lower() and f.lower().endswith(".csv"):
+                        p = os.path.join(d, f)
+                        log_thk(f"[DEBUG-THK] 发现本地容差/备胎候选: {f}，开始质检...")
+                        if evaluate_and_check_perfect(p):
+                            log_thk("[DEBUG-THK] 容差质检100分！使用本地文件。")
+                            if search_stats is not None: search_stats['local'].append(sublot_name)
+                            return p
+            except OSError:
+                continue
 
-                try:
-                    for filename in os.listdir(search_dir):
-                        if filename.startswith(Config.THICKNESS_PREFIX) and filename.endswith(".csv"):
-                            file_path = os.path.join(search_dir, filename)
-                            try:
-                                mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
-                                if start_time <= mod_time <= end_time:
-                                    if debug_enabled:
-                                        print(f"[DPGE101][THK] match by time: {file_path}")
-                                    return file_path
-                            except OSError:
-                                continue
-                except OSError:
-                    continue
+        # 统一提取真实机台时间戳
+        local_thk_ts = None
+        if best_partial_file:
+            m = re.search(r'[-_](\d{12,14})\.csv$', os.path.basename(best_partial_file), re.IGNORECASE)
+            if m:
+                local_thk_ts = m.group(1)
 
-            for search_dir in extra_search_dirs:
-                if not os.path.isdir(search_dir):
-                    continue
-                try:
-                    for filename in os.listdir(search_dir):
-                        if filename.startswith(Config.THICKNESS_PREFIX) and filename.endswith(".csv"):
-                            file_path = os.path.join(search_dir, filename)
-                            try:
-                                mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
-                                if start_time <= mod_time <= end_time:
-                                    if debug_enabled:
-                                        print(f"[DPGE101][THK] match by time (local): {file_path}")
-                                    return file_path
-                            except OSError:
-                                continue
-                except OSError:
-                    continue
-        if debug_enabled:
-            print("[DPGE101][THK] no thickness file matched.")
+        log_thk("[DEBUG-THK] 本地无满分文件，准备进入中央库寻找...")
 
+        central_dirs = []
+        templates = [
+            Config.ERO_ERROR_PATH_TEMPLATE,
+            Config.ERO_POST_PATH_TEMPLATE,
+            Config.ERO_PRE_PATH_TEMPLATE,
+            Config.THK_PROFILE_PATH_TEMPLATE,
+        ]
+        for t in templates:
+            if device_name == "FPMS007" and fpms007_as_dp and t in [Config.ERO_PRE_PATH_TEMPLATE, Config.ERO_POST_PATH_TEMPLATE]:
+                continue
+            p = t.format(device=device_name)
+            central_dirs.append(p)
+            if "Success" in p:
+                central_dirs.append(p.replace("\\Success", "").replace("/Success", ""))
+                
+        central_dirs_ordered = list(dict.fromkeys(central_dirs))
+
+        # =========================================================
+        # 阶段 2：中央库【第 1 发狙击：IMP 原始时间】
+        # =========================================================
+        if exact_suffix:
+            exact_target_name = f"Thickness_Sector_Height_Profile_Sectors_1_Inner_Radius_150mm_(HiRes)-{exact_suffix}.csv"
+            for d in central_dirs_ordered:
+                if not os.path.isdir(d): continue
+                guess_path = os.path.join(d, exact_target_name)
+                
+                if os.path.exists(guess_path):
+                    log_thk(f"[DEBUG-THK] IMP单发盲狙命中目标！开始质检: {guess_path}")
+                    if evaluate_and_check_perfect(guess_path):
+                        log_thk("[DEBUG-THK] 质检100分！瞬间返回。")
+                        if search_stats is not None: search_stats['imp_single'].append(sublot_name)
+                        return guess_path
+
+        # =========================================================
+        # 阶段 3：中央库【第 2 发狙击：提取到的真实 THK 时间】
+        # =========================================================
+        if local_thk_ts and local_thk_ts != exact_suffix:
+            log_thk(f"[DEBUG-THK] 启用机台真实时间({local_thk_ts})进行 THK单发盲狙...")
+            exact_target_name_thk = f"Thickness_Sector_Height_Profile_Sectors_1_Inner_Radius_150mm_(HiRes)-{local_thk_ts}.csv"
+            for d in central_dirs_ordered:
+                if not os.path.isdir(d): continue
+                guess_path = os.path.join(d, exact_target_name_thk)
+                
+                if os.path.exists(guess_path):
+                    log_thk(f"[DEBUG-THK] THK单发盲狙命中目标！开始质检: {guess_path}")
+                    if evaluate_and_check_perfect(guess_path):
+                        log_thk("[DEBUG-THK] 质检100分！瞬间返回。")
+                        if search_stats is not None: search_stats['thk_single'].append(sublot_name)
+                        return guess_path
+
+        # =========================================================
+        # 阶段 4：中央库【阶梯式火力扫射】
+        # =========================================================
+        
+        if allow_wide_search:
+            # 4.1 第一阶梯：近战点射 (±1秒)
+            offset_tier1 = get_offset_suffixes(1, 1) # 只生成 1秒的前后偏移，共2个时间戳
+            if offset_tier1:
+                log_thk("[DEBUG-THK] 狙击落空，启动【近距点射盲狙】(±1秒)...")
+                for d in central_dirs_ordered:
+                    if not os.path.isdir(d): continue
+                    for s in offset_tier1:
+                        guess_name = f"Thickness_Sector_Height_Profile_Sectors_1_Inner_Radius_150mm_(HiRes)-{s}.csv"
+                        guess_path = os.path.join(d, guess_name)
+                        
+                        if os.path.exists(guess_path):
+                            log_thk(f"[DEBUG-THK] 近距盲狙命中(后缀:{s})！开始质检: {guess_path}")
+                            if evaluate_and_check_perfect(guess_path):
+                                log_thk("[DEBUG-THK] 质检100分！瞬间返回。")
+                                if search_stats is not None: search_stats['multi_tier1'].append((sublot_name, list(sublot_trace_logs)))
+                                return guess_path
+                            
+            # 4.2 第二阶梯：远距扫射 (±2 到 ±10秒)
+            offset_tier2 = get_offset_suffixes(2, 10) # 扩大到 2~10秒，共18个时间戳
+            if offset_tier2:
+                log_thk("[DEBUG-THK] 近距点射落空，启动【远距火力扫射】(±2~10秒)...")
+                for d in central_dirs_ordered:
+                    if not os.path.isdir(d): continue
+                    for s in offset_tier2:
+                        guess_name = f"Thickness_Sector_Height_Profile_Sectors_1_Inner_Radius_150mm_(HiRes)-{s}.csv"
+                        guess_path = os.path.join(d, guess_name)
+                        
+                        if os.path.exists(guess_path):
+                            log_thk(f"[DEBUG-THK] 远距盲狙命中(后缀:{s})！开始质检: {guess_path}")
+                            if evaluate_and_check_perfect(guess_path):
+                                log_thk("[DEBUG-THK] 质检100分！瞬间返回。")
+                                if search_stats is not None: search_stats['multi_tier2'].append((sublot_name, list(sublot_trace_logs)))
+                                return guess_path
+
+        # =========================================================
+        # 阶段 5：降级保底
+        # =========================================================
+        if best_partial_file:
+            log_thk(f"[DEBUG-THK] <<< 未能找到满分文件，启用降级方案！")
+            log_thk(f"[DEBUG-THK] <<< 返回收集到的【最佳残缺文件】: {best_partial_file} (包含晶圆数: {best_wafer_count})")
+            if search_stats is not None: search_stats['fallback'].append((sublot_name, list(sublot_trace_logs)))
+            return best_partial_file
+
+        log_thk("[DEBUG-THK] <<< 彻底失败：按顺序盲狙完所有中央库，且无任何残缺件可用，返回 None。")
+        if search_stats is not None: search_stats['failed'].append((sublot_name, list(sublot_trace_logs)))
         return None
-
     def _format_acquisition_time(self, time_str: Optional[str]) -> str:
+        """
+        Tries to parse a date string and reformats it to 'YYYY/M/D H:M:S'.
+        """
         if not time_str or not time_str.strip():
             return ""
 
@@ -472,6 +669,7 @@ class TopoDataFunction:
         for fmt in possible_formats:
             try:
                 dt_obj = datetime.strptime(time_str, fmt)
+                # --- 修改：强制转换为 2026/2/1 2:40:29 格式 (无前导零) ---
                 return f"{dt_obj.year}/{dt_obj.month}/{dt_obj.day} {dt_obj.hour}:{dt_obj.minute}:{dt_obj.second}"
             except ValueError:
                 continue
@@ -479,6 +677,10 @@ class TopoDataFunction:
         return time_str
 
     def _combine_data_rows(self, date, device, sublot, imp_row, sqmm_row, thick_metrics) -> list:
+        """Combines data from all sources into a single row list for the final CSV."""
+        
+        # --- 安全补丁：确保 tm 列表长度足够 ---
+        # 即使厚度文件读取失败，也要补齐 None，保证 CSV 列数对齐，防止错位
         tm = list(thick_metrics) if thick_metrics else [None] * 9
         while len(tm) < 9:
             tm.append(None)
@@ -495,22 +697,36 @@ class TopoDataFunction:
         return [
             date.strftime('%Y%m%d'), device, sublot,
             imp_row.get('Wafer ID'), imp_row.get('Source Slot'), formatted_time,
-            imp_row.get('Mean Thickness (um)'),    
-            imp_row.get('Center Thickness (um)'), 
+            
+            # --- 修正: 顺序必须与 Headers 严格一致 ---
+            imp_row.get('Mean Thickness (um)'),    # 1. Mean
+            imp_row.get('Center Thickness (um)'), # 2. Center (Added)
+            
             imp_row.get('GBIR (um)'), imp_row.get('GFLR (um)'),
             imp_row.get('GMLYMCD (Bow-BF) (um)'), imp_row.get('GMLYMER (Warp-BF) (um)'),
             imp_row.get('SFQR Maximum (um)'),
-            sfqrp99_value, 
+            sfqrp99_value, # Use the conditionally obtained value
             imp_row.get('ESFQR Maximum (um)'),
             imp_row.get('Front Sector ZDD  Sectors: 72 @ 148 mm Mean (nm / mm^2)'),
             sqmm_row.get('Front THA (2 mm Square PV) @ 0.05 % (nm)'),
             sqmm_row.get('Front THA (10 mm Square PV) @ 0.05 % (nm)'),
             sqmm_row.get('Front THA (2 mm Square PV) @ 0 % (nm)'),
             sqmm_row.get('Front THA (10 mm Square PV) @ 0 % (nm)'),
-            tm[0], tm[1], tm[2], tm[3], tm[4], tm[5], tm[6], tm[7], tm[8]  
+            
+            # Thickness Metrics (从 tm[0] 到 tm[8])
+            tm[0], # ERO147
+            tm[1], # ERO148
+            tm[2], # ERO149
+            tm[3], # MaxR
+            tm[4], # MaxE
+            tm[5], # Convexity
+            tm[6], # Edge
+            tm[7], # Center_Slope
+            tm[8]  # Mid_Slope (这是最后一项)
         ]
 
     def _read_csv_file(self, folder: str, prefix: str) -> Optional[Tuple[List[Dict], List[str]]]:
+        """Robustly reads a CSV file into a list of dictionaries."""
         try:
             filename = next((f for f in os.listdir(folder) if f.startswith(prefix) and f.endswith(".csv")), None)
             if not filename: return None
@@ -538,6 +754,7 @@ class TopoDataFunction:
             return None
 
     def _write_output_csv(self, output_folder: str, data: list, headers: list):
+        """Writes the collected data to the final CSV file."""
         output_file = os.path.join(output_folder, f"{os.path.basename(output_folder)}.csv")
         with open(output_file, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
@@ -545,6 +762,7 @@ class TopoDataFunction:
             writer.writerows(data)
 
     def _find_subfolders(self, base_path: str, prefixes: List[str]) -> List[str]:
+        """Finds subfolders matching given prefixes, or all subfolders if no prefixes are provided."""
         if not prefixes:
             try:
                 return [os.path.join(base_path, d) for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
@@ -560,10 +778,12 @@ class TopoDataFunction:
             return [f for f in found_folders if os.path.isdir(f)]
 
     def on_topo_cancel(self):
+        """Cancels the TOPO data processing."""
         self.app.stop_event.set()
         messagebox.showinfo("信息", "已发送取消请求。进程将很快停止。")
 
     def _set_controls_state(self, enable: bool):
+        """Enables or disables UI controls during processing."""
         state = tk.NORMAL if enable else tk.DISABLED
         readonly_state = "readonly" if enable else tk.DISABLED
         
@@ -579,6 +799,10 @@ class TopoDataFunction:
             self.topo_progress_label.config(text="准备就绪")
 
     def save_thickness_profile(self, output_folder, sublot_id, profile_data, zeroed_profile_data):
+        """Saves thickness profile data to CSV and generates a chart."""
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
         fig, ax = plt.subplots(figsize=(12, 6))
         try:
             self._append_to_profile_csv(output_folder, "Thickness_Profile", profile_data)
@@ -615,6 +839,7 @@ class TopoDataFunction:
             gc.collect()
 
     def _append_to_profile_csv(self, output_folder, file_prefix, data_rows):
+        """Appends data to a profile CSV, writing headers if the file is new."""
         if not data_rows or not data_rows[0]: return
         profile_file = os.path.join(output_folder, f"{file_prefix}_{os.path.basename(output_folder)}.csv")
         file_exists = os.path.exists(profile_file)

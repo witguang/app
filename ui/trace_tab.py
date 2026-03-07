@@ -1,9 +1,12 @@
+import os
+import sys
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, filedialog, messagebox
 from tkcalendar import DateEntry
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
+import re
 
 from database import DatabaseManager
 
@@ -14,6 +17,7 @@ class SublotTraceFunction:
         self.frame = None
     
     def show(self):
+        """Shows the Sublot trace feature UI."""
         if self.frame: self.frame.destroy()
         self.frame = ttk.Frame(self.app.right_frame)
         self.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -108,6 +112,7 @@ class SublotTraceFunction:
         self._toggle_time_controls()
 
     def _add_product_id(self):
+        """Adds a new product ID to the dropdown list."""
         new_prod = self.new_prod_entry.get().strip()
         if new_prod:
             current_values = list(self.prod_id_combo['values'])
@@ -121,6 +126,7 @@ class SublotTraceFunction:
             messagebox.showwarning("输入为空", "请输入要添加的产品ID。")
 
     def _select_rd_tools(self):
+        """Selects specific R&D tools."""
         self.eqp_listbox.selection_clear(0, tk.END)
         rd_tools = {'FPOL007', 'FPOL008', 'FPOL009', 'FPOL010'}
         for i, item in enumerate(self.eqp_listbox.get(0, tk.END)):
@@ -128,6 +134,7 @@ class SublotTraceFunction:
                 self.eqp_listbox.selection_set(i)
     
     def _select_non_rd_tools(self):
+        """Selects all non-R&D tools."""
         self.eqp_listbox.selection_clear(0, tk.END)
         rd_tools = {'FPOL007', 'FPOL008', 'FPOL009', 'FPOL010'}
         for i, item in enumerate(self.eqp_listbox.get(0, tk.END)):
@@ -135,11 +142,13 @@ class SublotTraceFunction:
                 self.eqp_listbox.selection_set(i)
 
     def _toggle_time_controls(self):
+        """Enables or disables date entry widgets based on the time mode selection."""
         state = tk.NORMAL if self.time_mode.get() == "custom" else tk.DISABLED
         self.start_date_entry.config(state=state)
         self.end_date_entry.config(state=state)
 
     def start_tracing_thread(self):
+        """Starts the database query in a separate thread with smart warmup."""
         def trace_logic():
             params = {
                 "selected_eqp": [self.eqp_listbox.get(i) for i in self.eqp_listbox.curselection()],
@@ -153,8 +162,15 @@ class SublotTraceFunction:
                 messagebox.showwarning("输入错误", "请至少选择一个目标设备。")
                 return
 
-            self.app.update_progress("正在连接并查询数据库...", None, 'trace')
+            # =======================================================
+            # 💡 终极体验优化：检查 JVM 是否启动，如果没启动，给个预期
+            # =======================================================
+            if not DatabaseManager._jvm_started:
+                self.app.update_progress("首次查询：正在从服务器加载数据引擎引擎 (约需 30 秒)，请耐心等待...", None, 'trace')
+            else:
+                self.app.update_progress("正在连接并查询数据库...", None, 'trace')
             
+            # 这里的查询就会触发 JVM 启动（如果是第一次）
             results = self.run_database_query(**params)
             
             if self.frame.winfo_exists():
@@ -163,6 +179,10 @@ class SublotTraceFunction:
         self.app.start_thread(trace_logic, self._set_trace_controls_state)
 
     def run_database_query(self, selected_prod_id: Optional[str], selected_eqp: List[str] = None, sublot_ids: List[str] = None, time_mode: str = None, start_date: datetime.date = None, end_date: datetime.date = None) -> Optional[List[tuple]]:
+        """
+        Executes the database query to trace sublot history. This method is now responsible for data retrieval only.
+        (Includes previous fix for parameter order)
+        """
         params = []
         prod_id_condition = ""
         if selected_prod_id and selected_prod_id != "ALL":
@@ -221,23 +241,38 @@ class SublotTraceFunction:
         
         sql = f"""
             {target_sublots_cte}
+            
             SELECT 
-                b.PROD_ID,
-                b.SUBLOT_ID,
-                MAX(CASE WHEN b.OPE_ID = '5110' THEN CAST(b.EQP_ID AS VARCHAR(20)) END) AS DPOL_EQP,
-                MAX(CASE WHEN b.OPE_ID = '5110' THEN b.HIS_REGIST_DTTM END) AS DPOL_TIME,
-                MAX(CASE WHEN b.OPE_ID = '5120' THEN CAST(b.EQP_ID AS VARCHAR(20)) END) AS DPGE_EQP,
-                MAX(CASE WHEN b.OPE_ID = '5120' THEN b.HIS_REGIST_DTTM END) AS DPGE_TIME,
-                MAX(CASE WHEN b.OPE_ID = '6040' THEN CAST(b.EQP_ID AS VARCHAR(20)) END) AS FPOL_EQP,
-                MAX(CASE WHEN b.OPE_ID = '6040' THEN b.HIS_REGIST_DTTM END) AS FPOL_TIME,
-                MAX(CASE WHEN b.OPE_ID = '7020' THEN CAST(b.EQP_ID AS VARCHAR(20)) END) AS FPMS_EQP,
-                MAX(CASE WHEN b.OPE_ID = '7020' THEN b.HIS_REGIST_DTTM END) AS FPMS_TIME
-            FROM DOPE_HIS AS b
-            INNER JOIN TargetSublots AS t ON b.SUBLOT_ID = t.SUBLOT_ID
-            WHERE b.OPE_ID IN ('5110', '5120', '6040', '7020')
-            GROUP BY b.PROD_ID, b.SUBLOT_ID
-            ORDER BY b.SUBLOT_ID
+                r.PROD_ID,
+                r.SUBLOT_ID,
+                MAX(CASE WHEN r.OPE_ID = '5110' THEN r.EQP_ID END) AS DPOL_EQP,
+                MAX(CASE WHEN r.OPE_ID = '5110' THEN r.HIS_REGIST_DTTM END) AS DPOL_TIME,
+                MAX(CASE WHEN r.OPE_ID = '5120' THEN r.EQP_ID END) AS DPGE_EQP,
+                MAX(CASE WHEN r.OPE_ID = '5120' THEN r.HIS_REGIST_DTTM END) AS DPGE_TIME,
+                MAX(CASE WHEN r.OPE_ID = '6040' THEN r.EQP_ID END) AS FPOL_EQP,
+                MAX(CASE WHEN r.OPE_ID = '6040' THEN r.HIS_REGIST_DTTM END) AS FPOL_TIME,
+                MAX(CASE WHEN r.OPE_ID = '7020' THEN r.EQP_ID END) AS FPMS_EQP,
+                MAX(CASE WHEN r.OPE_ID = '7020' THEN r.HIS_REGIST_DTTM END) AS FPMS_TIME
+            FROM (
+                SELECT 
+                    b.PROD_ID,
+                    b.SUBLOT_ID,
+                    b.OPE_ID,
+                    CAST(b.EQP_ID AS VARCHAR(20)) AS EQP_ID,
+                    b.HIS_REGIST_DTTM,
+                    ROW_NUMBER() OVER(
+                        PARTITION BY b.SUBLOT_ID, b.OPE_ID 
+                        ORDER BY b.HIS_REGIST_DTTM DESC
+                    ) as rn
+                FROM DOPE_HIS AS b
+                INNER JOIN TargetSublots AS t ON b.SUBLOT_ID = t.SUBLOT_ID
+                WHERE b.OPE_ID IN ('5110', '5120', '6040', '7020')
+            ) AS r
+            WHERE r.rn = 1  -- 只取时间最新的一条！绝不混入报错重测的历史机台！
+            GROUP BY r.PROD_ID, r.SUBLOT_ID
+            ORDER BY r.SUBLOT_ID
         """
+        
         
         conn = None
         results = None
@@ -246,16 +281,25 @@ class SublotTraceFunction:
             if conn:
                 with conn.cursor() as cursor:
                     cursor.execute(sql, params)
-                    results = cursor.fetchall()
+                    raw_results = cursor.fetchall()
+                    results = []
+                    if raw_results:
+                        for row in raw_results:
+                            # 将每行中的每个元素都强制转为 Python 字符串，处理 None 为空字符串
+                            py_row = tuple(str(item) if item is not None else "" for item in row)
+                            results.append(py_row)
+                    # ---------------------------------------------
+                    return results
         except Exception as e:
             self.app.update_progress(f"查询失败: {e}", None, 'trace')
             print(f"数据库查询错误: {e}")
         finally:
-            if conn: conn.close()
+           pass
         
         return results
 
     def display_results(self, results):
+        """Safely displays query results in the Treeview with column count validation."""
         self.tree.delete(*self.tree.get_children())
         self.export_button.config(state=tk.DISABLED)
 
@@ -280,6 +324,7 @@ class SublotTraceFunction:
             self.app.update_progress("查询完成。未找到匹配的历史记录。", None, 'trace')
 
     def _set_trace_controls_state(self, enable: bool):
+        """Enables or disables UI controls."""
         state = tk.NORMAL if enable else tk.DISABLED
         readonly_state = "readonly" if enable else tk.DISABLED
 
@@ -289,6 +334,7 @@ class SublotTraceFunction:
             self.export_button.config(state=tk.DISABLED)
 
         self.eqp_listbox.config(state=state)
+        
         self.prod_id_combo.config(state=readonly_state)
         self.new_prod_entry.config(state=state)
         
@@ -306,6 +352,7 @@ class SublotTraceFunction:
             self.progress_label.config(text="准备就绪")
 
     def export_to_csv(self):
+        """Exports the Treeview data to a CSV file."""
         filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV 文件", "*.csv")])
         if not filename: return
         try:
